@@ -330,6 +330,7 @@ markers = [
   "deno: language server running for Deno (uses the built-in deno lsp)",
   "svelte: language server running for Svelte (uses svelte-language-server)",
   "vue: language server running for Vue (uses TypeScript LSP)",
+  "astro: language server running for Astro (uses TypeScript LSP)",
   "php: language server running for PHP",
   "perl: language server running for Perl",
   "csharp: language server running for C#",

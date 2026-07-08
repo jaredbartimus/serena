@@ -139,6 +139,11 @@ class LanguageServerId(str, Enum):
     LEAN4 = "lean4"
     GROOVY = "groovy"
     VUE = "vue"
+    ASTRO = "astro"
+    """Astro language server using @astrojs/language-server with a companion TypeScript LS.
+    Handles .astro Single File Components plus TypeScript and JavaScript files in Astro
+    projects. Requires Node.js and npm.
+    """
     SVELTE = "svelte"
     """Svelte language server using svelte-language-server.
     Supports .svelte Single File Components plus TypeScript and JavaScript
@@ -370,8 +375,8 @@ class LanguageServerId(str, Enum):
         # We assign lower priority to languages that are supersets of others, such that
         # the "larger" language is only chosen when it matches more strongly
         match self:
-            # languages that are supersets of others (Vue/Svelte are supersets of TypeScript/JavaScript)
-            case self.VUE | self.SVELTE:
+            # languages that are supersets of others (Vue/Astro/Svelte are supersets of TypeScript/JavaScript)
+            case self.VUE | self.ASTRO | self.SVELTE:
                 return 1
             # regular languages
             case _:
@@ -552,6 +557,13 @@ class LanguageServerId(str, Enum):
                         for base_pattern in ["ts", "js"]:
                             path_patterns.append(f".{prefix}{base_pattern}{postfix}")
                 return FilenameMatcher(*path_patterns)
+            case self.ASTRO:
+                path_patterns = [".astro"]
+                for prefix in ["c", "m", ""]:
+                    for postfix in ["x", ""]:
+                        for base_pattern in ["ts", "js"]:
+                            path_patterns.append(f".{prefix}{base_pattern}{postfix}")
+                return FilenameMatcher(*path_patterns)
             case self.SVELTE:
                 path_patterns = [".svelte"]
                 for prefix in ["c", "m", ""]:
@@ -689,6 +701,10 @@ class LanguageServerId(str, Enum):
                 from solidlsp.language_servers.vue_language_server import VueLanguageServer
 
                 return VueLanguageServer
+            case self.ASTRO:
+                from solidlsp.language_servers.astro_language_server import AstroLanguageServer
+
+                return AstroLanguageServer
             case self.SVELTE:
                 from solidlsp.language_servers.svelte_language_server import SvelteLanguageServer
 
