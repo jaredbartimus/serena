@@ -17,6 +17,7 @@ import pytest
 
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import LanguageServerId
+from solidlsp.ls_utils import SymbolUtils
 
 
 @pytest.mark.astro
@@ -92,13 +93,15 @@ class TestAstroDualLspArchitecture:
     """Tests for TypeScript server coordination in Astro."""
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
-    def test_typescript_server_starts(self, language_server: SolidLanguageServer) -> None:
-        """Test that companion TypeScript server starts successfully."""
-        astro_ls = language_server.language_server
-        # The Astro LS keeps its companion TypeScript server in the _ts_server attribute
-        # (self-contained companion pattern, mirroring the upstream Vue language server).
-        assert hasattr(astro_ls, "_ts_server"), "Expected _ts_server attribute on Astro language server"
-        assert astro_ls._ts_server is not None, "Expected companion TypeScript server to be started"
+    def test_astro_and_typescript_files_in_symbol_tree(self, language_server: SolidLanguageServer) -> None:
+        """Test that full symbol tree includes symbols from both Astro and TypeScript files."""
+        symbols = language_server.request_full_symbol_tree()
+
+        # Layout.astro contains Props interface
+        assert SymbolUtils.symbol_tree_contains_name(symbols, "Props"), "Props interface not found in symbol tree"
+        # counter.ts contains CounterStore interface and createCounter function
+        assert SymbolUtils.symbol_tree_contains_name(symbols, "CounterStore"), "CounterStore not found in symbol tree"
+        assert SymbolUtils.symbol_tree_contains_name(symbols, "createCounter"), "createCounter not found in symbol tree"
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
     def test_dual_server_definition_lookup(self, language_server: SolidLanguageServer) -> None:

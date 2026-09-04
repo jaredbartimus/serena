@@ -25,11 +25,14 @@ from solidlsp.language_servers.typescript_language_server import (
     TypeScriptLanguageServer,
     prefer_non_node_modules_definition,
 )
-from solidlsp.ls import LanguageServerDependencyProvider, SolidLanguageServer
+from solidlsp.ls import (
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    SolidLanguageServer,
+)
 from solidlsp.ls_config import FilenameMatcher, LanguageServerConfig, LanguageServerId
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_utils import PathUtils
-from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
 from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
@@ -168,6 +171,8 @@ class AstroLanguageServer(SolidLanguageServer):
 
     You can pass the following entries in ls_specific_settings["astro"]:
         - astro_language_server_version: Version of @astrojs/language-server to install (default: "2.16.11")
+        - astro_ts_plugin_version: Version of @astrojs/ts-plugin to install (default: "1.10.10")
+        - npm_registry: optional alternative npm registry URL
 
     Note: TypeScript versions are configured via ls_specific_settings["typescript"]:
         - typescript_version: Version of TypeScript to install (default: "5.9.3")
@@ -177,13 +182,145 @@ class AstroLanguageServer(SolidLanguageServer):
     TS_SERVER_READY_TIMEOUT = 5.0
     ASTRO_SERVER_READY_TIMEOUT = 3.0
 
+    class DependencyProvider(LanguageServerDependencyProviderSinglePath):
+        """Dependency provider for Astro language server and companion dependencies."""
+
+        def __init__(
+            self,
+            custom_settings: SolidLSPSettings.CustomLSSettings,
+            ls_resources_dir: str,
+            ts_settings: SolidLSPSettings.CustomLSSettings,
+        ) -> None:
+            super().__init__(custom_settings, ls_resources_dir)
+            self._ts_settings = ts_settings
+
+        @override
+        def _get_or_install_core_dependency(self) -> str:
+            assert shutil.which("node") is not None, "node is not installed or isn't in PATH. Please install NodeJS and try again."
+            assert shutil.which("npm") is not None, "npm is not installed or isn't in PATH. Please install npm and try again."
+
+            # resolve version settings
+            astro_language_server_version = self._custom_settings.get(
+                "astro_language_server_version", DEFAULT_ASTRO_LANGUAGE_SERVER_VERSION
+            )
+            astro_ts_plugin_version = self._custom_settings.get("astro_ts_plugin_version", DEFAULT_ASTRO_TS_PLUGIN_VERSION)
+            typescript_version = self._custom_settings.get(
+                "typescript_version", self._ts_settings.get("typescript_version", DEFAULT_TYPESCRIPT_VERSION)
+            )
+            typescript_language_server_version = self._custom_settings.get(
+                "typescript_language_server_version",
+                self._ts_settings.get("typescript_language_server_version", DEFAULT_TYPESCRIPT_LANGUAGE_SERVER_VERSION),
+            )
+            npm_registry = self._custom_settings.get("npm_registry", self._ts_settings.get("npm_registry"))
+
+            # locate install directory and executables
+            install_dir = os.path.join(self._ls_resources_dir, f"astro-lsp-{astro_language_server_version}")
+            legacy_install_dir = os.path.join(self._ls_resources_dir, "astro-lsp")
+            if not os.path.exists(install_dir) and os.path.exists(legacy_install_dir):
+                try:
+                    shutil.move(legacy_install_dir, install_dir)
+                except Exception as e:
+                    log.debug("Could not rename legacy astro-lsp directory: %s", e)
+
+            astro_executable_path = os.path.join(install_dir, "node_modules", ".bin", "astro-ls")
+            ts_ls_executable_path = os.path.join(install_dir, "node_modules", ".bin", "typescript-language-server")
+
+            if os.name == "nt":
+                astro_executable_path += ".cmd"
+                ts_ls_executable_path += ".cmd"
+
+            # check if installation is needed based on executables and version marker
+            version_file = os.path.join(install_dir, ".installed_version")
+            expected_version = (
+                f"{astro_language_server_version}_{astro_ts_plugin_version}_{typescript_version}_{typescript_language_server_version}"
+            )
+
+            needs_install = not os.path.exists(astro_executable_path) or not os.path.exists(ts_ls_executable_path)
+            if not needs_install:
+                if os.path.exists(version_file):
+                    with open(version_file) as f:
+                        installed_version = f.read().strip()
+                    if installed_version != expected_version:
+                        log.info(
+                            f"Astro Language Server version mismatch: installed={installed_version}, expected={expected_version}. Reinstalling..."
+                        )
+                        needs_install = True
+                else:
+                    log.info("Astro Language Server version file not found. Reinstalling to ensure correct version...")
+                    needs_install = True
+
+            # install dependencies when required
+            if needs_install:
+                log.info(
+                    "Installing @astrojs/language-server@%s + @astrojs/ts-plugin@%s + typescript@%s + typescript-language-server@%s ...",
+                    astro_language_server_version,
+                    astro_ts_plugin_version,
+                    typescript_version,
+                    typescript_language_server_version,
+                )
+                deps = RuntimeDependencyCollection(
+                    [
+                        RuntimeDependency(
+                            id="astro-language-server",
+                            description="Astro language server package",
+                            command=build_npm_install_command("@astrojs/language-server", astro_language_server_version, npm_registry),
+                            platform_id="any",
+                        ),
+                        RuntimeDependency(
+                            id="astro-ts-plugin",
+                            description="Astro TypeScript plugin, gives the companion tsserver .astro awareness",
+                            command=build_npm_install_command("@astrojs/ts-plugin", astro_ts_plugin_version, npm_registry),
+                            platform_id="any",
+                        ),
+                        RuntimeDependency(
+                            id="typescript",
+                            description="TypeScript (required for tsdk)",
+                            command=build_npm_install_command("typescript", typescript_version, npm_registry),
+                            platform_id="any",
+                        ),
+                        RuntimeDependency(
+                            id="typescript-language-server",
+                            description="TypeScript language server (for Astro companion TS forwarding)",
+                            command=build_npm_install_command(
+                                "typescript-language-server", typescript_language_server_version, npm_registry
+                            ),
+                            platform_id="any",
+                        ),
+                    ]
+                )
+                deps.install(install_dir)
+                # write version marker file
+                with open(version_file, "w") as f:
+                    f.write(expected_version)
+                log.info("Astro language server dependencies installed successfully")
+
+            # verify required executables exist
+            if not os.path.exists(astro_executable_path):
+                raise FileNotFoundError(
+                    f"astro-ls executable not found at {astro_executable_path}, something went wrong with the installation."
+                )
+
+            if not os.path.exists(ts_ls_executable_path):
+                raise FileNotFoundError(
+                    f"typescript-language-server executable not found at {ts_ls_executable_path}, something went wrong with the installation."
+                )
+
+            return astro_executable_path
+
+        @override
+        def _create_launch_command(self, core_path: str) -> list[str]:
+            return [core_path, "--stdio"]
+
+    @override
+    def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
+        ts_settings = self._solidlsp_settings.get_ls_specific_settings(LanguageServerId.TYPESCRIPT)
+        return self.DependencyProvider(self._custom_settings, self._ls_resources_dir, ts_settings)
+
     def __init__(self, config: LanguageServerConfig, repository_root_path: str, solidlsp_settings: SolidLSPSettings):
-        astro_lsp_executable_path, self.tsdk_path, self._ts_ls_cmd = self._setup_runtime_dependencies(config, solidlsp_settings)
-        self._astro_ls_dir = os.path.join(self.ls_resources_dir(solidlsp_settings), "astro-lsp")
         super().__init__(
             config,
             repository_root_path,
-            ProcessLaunchInfo(cmd=astro_lsp_executable_path, cwd=repository_root_path),
+            None,
             "astro",
             solidlsp_settings,
         )
@@ -195,6 +332,30 @@ class AstroLanguageServer(SolidLanguageServer):
         self._indexed_astro_file_uris: list[str] = []
         self._ls_operational_ready_event = threading.Event()
         self._ls_operational_lock = threading.Lock()
+
+    def _get_install_dir(self) -> str:
+        """:return: versioned install directory for astro-language-server and companion deps."""
+        version = self._custom_settings.get("astro_language_server_version", DEFAULT_ASTRO_LANGUAGE_SERVER_VERSION)
+        return os.path.join(self._ls_resources_dir, f"astro-lsp-{version}")
+
+    def _get_tsdk_path(self) -> str:
+        """Compute the local typescript/lib path for the Astro language server."""
+        tsdk_candidate = os.path.join(self._get_install_dir(), "node_modules", "typescript", "lib")
+        assert os.path.isdir(tsdk_candidate), (
+            f"TypeScript SDK not found at expected path: {tsdk_candidate}. Installation via DependencyProvider failed or version mismatch."
+        )
+        return tsdk_candidate
+
+    def _get_ts_ls_executable(self) -> str:
+        """:return: path to the typescript-language-server binary installed alongside the astro LS."""
+        path = os.path.join(self._get_install_dir(), "node_modules", ".bin", "typescript-language-server")
+        if os.name == "nt":
+            path += ".cmd"
+        return path
+
+    @property
+    def tsdk_path(self) -> str:
+        return self._get_tsdk_path()
 
     def _ensure_ls_operational(self) -> None:
         # short-circuit completed warm-up
@@ -417,109 +578,6 @@ class AstroLanguageServer(SolidLanguageServer):
         )
         return deleted_text
 
-    @classmethod
-    def _setup_runtime_dependencies(cls, config: LanguageServerConfig, solidlsp_settings: SolidLSPSettings) -> tuple[list[str], str, str]:
-        is_node_installed = shutil.which("node") is not None
-        assert is_node_installed, "node is not installed or isn't in PATH. Please install NodeJS and try again."
-        is_npm_installed = shutil.which("npm") is not None
-        assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
-
-        # Get TypeScript version settings from TypeScript language server settings
-        typescript_config = solidlsp_settings.get_ls_specific_settings(LanguageServerId.TYPESCRIPT)
-        typescript_version = typescript_config.get("typescript_version", DEFAULT_TYPESCRIPT_VERSION)
-        typescript_language_server_version = typescript_config.get(
-            "typescript_language_server_version", DEFAULT_TYPESCRIPT_LANGUAGE_SERVER_VERSION
-        )
-        astro_config = solidlsp_settings.get_ls_specific_settings(LanguageServerId.ASTRO)
-        astro_language_server_version = astro_config.get("astro_language_server_version", DEFAULT_ASTRO_LANGUAGE_SERVER_VERSION)
-        # @astrojs/ts-plugin is NOT a dependency of @astrojs/language-server, so it must be installed
-        # explicitly. Without it the companion tsserver has no .astro awareness and cross-file
-        # resolution between .ts/.js and .astro files silently returns nothing.
-        astro_ts_plugin_version = astro_config.get("astro_ts_plugin_version", DEFAULT_ASTRO_TS_PLUGIN_VERSION)
-        npm_registry = astro_config.get("npm_registry", typescript_config.get("npm_registry"))
-
-        deps = RuntimeDependencyCollection(
-            [
-                RuntimeDependency(
-                    id="astro-language-server",
-                    description="Astro language server package",
-                    command=build_npm_install_command("@astrojs/language-server", astro_language_server_version, npm_registry),
-                    platform_id="any",
-                ),
-                RuntimeDependency(
-                    id="astro-ts-plugin",
-                    description="Astro TypeScript plugin, gives the companion tsserver .astro awareness",
-                    command=build_npm_install_command("@astrojs/ts-plugin", astro_ts_plugin_version, npm_registry),
-                    platform_id="any",
-                ),
-                RuntimeDependency(
-                    id="typescript",
-                    description="TypeScript (required for tsdk)",
-                    command=build_npm_install_command("typescript", typescript_version, npm_registry),
-                    platform_id="any",
-                ),
-                RuntimeDependency(
-                    id="typescript-language-server",
-                    description="TypeScript language server (for Astro companion TS forwarding)",
-                    command=build_npm_install_command("typescript-language-server", typescript_language_server_version, npm_registry),
-                    platform_id="any",
-                ),
-            ]
-        )
-
-        astro_ls_dir = os.path.join(cls.ls_resources_dir(solidlsp_settings), "astro-lsp")
-        astro_executable_path = os.path.join(astro_ls_dir, "node_modules", ".bin", "astro-ls")
-        ts_ls_executable_path = os.path.join(astro_ls_dir, "node_modules", ".bin", "typescript-language-server")
-
-        if os.name == "nt":
-            astro_executable_path += ".cmd"
-            ts_ls_executable_path += ".cmd"
-
-        tsdk_path = os.path.join(astro_ls_dir, "node_modules", "typescript", "lib")
-
-        # Check if installation is needed based on executables AND version
-        version_file = os.path.join(astro_ls_dir, ".installed_version")
-        expected_version = (
-            f"{astro_language_server_version}_{astro_ts_plugin_version}_{typescript_version}_{typescript_language_server_version}"
-        )
-
-        needs_install = False
-        if not os.path.exists(astro_executable_path) or not os.path.exists(ts_ls_executable_path):
-            log.info("Astro/TypeScript Language Server executables not found.")
-            needs_install = True
-        elif os.path.exists(version_file):
-            with open(version_file) as f:
-                installed_version = f.read().strip()
-            if installed_version != expected_version:
-                log.info(
-                    f"Astro Language Server version mismatch: installed={installed_version}, expected={expected_version}. Reinstalling..."
-                )
-                needs_install = True
-        else:
-            # No version file exists, assume old installation needs refresh
-            log.info("Astro Language Server version file not found. Reinstalling to ensure correct version...")
-            needs_install = True
-
-        if needs_install:
-            log.info("Installing Astro/TypeScript Language Server dependencies...")
-            deps.install(astro_ls_dir)
-            # Write version marker file
-            with open(version_file, "w") as f:
-                f.write(expected_version)
-            log.info("Astro language server dependencies installed successfully")
-
-        if not os.path.exists(astro_executable_path):
-            raise FileNotFoundError(
-                f"astro-ls executable not found at {astro_executable_path}, something went wrong with the installation."
-            )
-
-        if not os.path.exists(ts_ls_executable_path):
-            raise FileNotFoundError(
-                f"typescript-language-server executable not found at {ts_ls_executable_path}, something went wrong with the installation."
-            )
-
-        return [astro_executable_path, "--stdio"], tsdk_path, ts_ls_executable_path
-
     def _create_base_initialize_params(self) -> dict:
         initialize_params = {
             "locale": "en",
@@ -556,7 +614,7 @@ class AstroLanguageServer(SolidLanguageServer):
 
     def _start_typescript_server(self) -> None:
         try:
-            astro_ts_plugin_path = os.path.join(self._astro_ls_dir, "node_modules", "@astrojs", "ts-plugin")
+            astro_ts_plugin_path = os.path.join(self._get_install_dir(), "node_modules", "@astrojs", "ts-plugin")
             if not os.path.exists(astro_ts_plugin_path):
                 log.warning(
                     "Astro TypeScript plugin not found at %s. The companion tsserver will lack .astro "
@@ -577,7 +635,7 @@ class AstroLanguageServer(SolidLanguageServer):
                 solidlsp_settings=self._solidlsp_settings,
                 astro_plugin_path=astro_ts_plugin_path,
                 tsdk_path=self.tsdk_path,
-                ts_ls_executable_path=self._ts_ls_cmd,
+                ts_ls_executable_path=self._get_ts_ls_executable(),
             )
 
             log.info("Starting companion TypeScript server")
