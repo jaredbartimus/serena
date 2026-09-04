@@ -11,11 +11,54 @@ Template: test_vue_symbol_retrieval.py
 """
 
 import os
+from collections.abc import Iterable
+from urllib.parse import unquote
 
 import pytest
 
+from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import LanguageServerId
+from solidlsp.ls_types import TextEdit, WorkspaceEdit
+from test.solidlsp.conftest import read_repo_file
+
+
+def _iter_workspace_edit_entries(workspace_edit: WorkspaceEdit) -> Iterable[tuple[str, TextEdit]]:
+    if workspace_edit.get("changes"):
+        for uri, edits in workspace_edit["changes"].items():
+            for edit in edits:
+                yield uri, edit
+
+    for change in workspace_edit.get("documentChanges") or []:
+        if "textDocument" not in change or "edits" not in change:
+            continue
+        uri = change["textDocument"]["uri"]
+        for edit in change["edits"]:
+            yield uri, edit
+
+
+def _assert_rename_edit(
+    workspace_edit: WorkspaceEdit | None,
+    new_name: str,
+    expected_path_fragments: set[str],
+) -> None:
+    assert workspace_edit is not None, "rename should return a WorkspaceEdit"
+
+    entries = list(_iter_workspace_edit_entries(workspace_edit))
+    assert entries, workspace_edit
+
+    edited_paths = {unquote(uri).replace("\\", "/") for uri, _edit in entries}
+    for expected_path in expected_path_fragments:
+        assert any(expected_path in edited_path for edited_path in edited_paths), (
+            f"Expected rename edit for {expected_path}, got {sorted(edited_paths)}"
+        )
+
+    for uri, edit in entries:
+        assert "range" in edit, f"TextEdit in {uri} should have a range"
+        assert "newText" in edit, f"TextEdit in {uri} should have newText"
+        assert new_name in edit["newText"], f"TextEdit in {uri} should include {new_name}, got {edit['newText']}"
+        assert edit["range"]["start"]["line"] >= 0
+        assert edit["range"]["start"]["character"] >= 0
 
 
 @pytest.mark.astro
@@ -73,3 +116,36 @@ class TestAstroSymbolRetrieval:
         symbol_names = [s["name"] for s in all_symbols]
         assert "formatNumber" in symbol_names, f"Expected 'formatNumber' in symbols, got: {symbol_names}"
         assert "formatDate" in symbol_names, f"Expected 'formatDate' in symbols, got: {symbol_names}"
+
+    @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
+    def test_rename_typescript_symbol_updates_astro_importer(self, language_server: SolidLanguageServer) -> None:
+        """Test that renaming an exported TypeScript function updates both TS definition and Astro usages."""
+        file_path = os.path.join("src", "stores", "counter.ts")
+        coords = find_text_coordinates(read_repo_file(language_server, file_path), r"(createCounter)")
+        assert coords is not None
+
+        workspace_edit = language_server.request_rename_symbol_edit(file_path, coords.line, coords.col, "buildCounter")
+        _assert_rename_edit(
+            workspace_edit,
+            "buildCounter",
+            {
+                "src/stores/counter.ts",
+                "src/pages/index.astro",
+            },
+        )
+
+    @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
+    def test_rename_local_symbol_within_astro_file(self, language_server: SolidLanguageServer) -> None:
+        """Test that renaming a local variable in an Astro frontmatter updates template references."""
+        file_path = os.path.join("src", "pages", "index.astro")
+        coords = find_text_coordinates(read_repo_file(language_server, file_path), r"const (counter) =")
+        assert coords is not None
+
+        workspace_edit = language_server.request_rename_symbol_edit(file_path, coords.line, coords.col, "counterInstance")
+        _assert_rename_edit(
+            workspace_edit,
+            "counterInstance",
+            {"src/pages/index.astro"},
+        )
+        entries = list(_iter_workspace_edit_entries(workspace_edit))
+        assert len(entries) >= 2, f"Expected at least 2 edit sites for counter in index.astro, got {len(entries)}"
