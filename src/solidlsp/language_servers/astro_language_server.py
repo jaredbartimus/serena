@@ -419,7 +419,7 @@ class AstroLanguageServer(SolidLanguageServer):
         for astro_file in repo_path.rglob("*.astro"):
             try:
                 relative_path = str(astro_file.relative_to(repo_path))
-                if "node_modules" not in relative_path and not relative_path.startswith("."):
+                if not self.is_ignored_path(relative_path):
                     astro_files.append(relative_path)
             except Exception as e:
                 log.debug(f"Error processing Astro file {astro_file}: {e}")

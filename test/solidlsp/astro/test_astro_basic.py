@@ -128,3 +128,12 @@ class TestAstroEdgeCases:
         all_symbols, _roots = symbols.get_all_symbols_and_roots()
         symbol_names = [s["name"] for s in all_symbols]
         assert "counter" in symbol_names, f"Expected 'counter' variable in index.astro, got: {symbol_names}"
+
+    @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
+    def test_ignored_directories_classification(self, language_server: SolidLanguageServer) -> None:
+        """Test that generated and build directories are classified as ignored."""
+        assert language_server.is_ignored_path("dist/index.astro") is True
+        assert language_server.is_ignored_path("build/index.astro") is True
+        assert language_server.is_ignored_path(".astro/types.d.ts") is True
+        assert language_server.is_ignored_path("node_modules/pkg/Component.astro") is True
+        assert language_server.is_ignored_path("src/pages/index.astro") is False
