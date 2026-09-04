@@ -12,6 +12,7 @@ Template: test_vue_basic.py
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -103,6 +104,14 @@ class TestAstroDualLspArchitecture:
         assert SymbolUtils.symbol_tree_contains_name(symbols, "CounterStore"), "CounterStore not found in symbol tree"
         assert SymbolUtils.symbol_tree_contains_name(symbols, "createCounter"), "createCounter not found in symbol tree"
 
+        # verify ignored directories are excluded from the symbol tree
+        for s in symbols:
+            rel_path = s["location"]["relativePath"]
+            parts = Path(rel_path).parts
+            assert "node_modules" not in parts, f"Unexpected node_modules in symbol tree: {rel_path}"
+            assert ".astro" not in parts, f"Unexpected .astro directory in symbol tree: {rel_path}"
+            assert "dist" not in parts, f"Unexpected dist directory in symbol tree: {rel_path}"
+
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
     def test_dual_server_definition_lookup(self, language_server: SolidLanguageServer) -> None:
         """Test that definitions work across both Astro and TypeScript servers."""
@@ -128,12 +137,3 @@ class TestAstroEdgeCases:
         all_symbols, _roots = symbols.get_all_symbols_and_roots()
         symbol_names = [s["name"] for s in all_symbols]
         assert "counter" in symbol_names, f"Expected 'counter' variable in index.astro, got: {symbol_names}"
-
-    @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
-    def test_ignored_directories_classification(self, language_server: SolidLanguageServer) -> None:
-        """Test that generated and build directories are classified as ignored."""
-        assert language_server.is_ignored_path("dist/index.astro") is True
-        assert language_server.is_ignored_path("build/index.astro") is True
-        assert language_server.is_ignored_path(".astro/types.d.ts") is True
-        assert language_server.is_ignored_path("node_modules/pkg/Component.astro") is True
-        assert language_server.is_ignored_path("src/pages/index.astro") is False

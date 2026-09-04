@@ -19,12 +19,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 
 import pytest
 from filelock import FileLock
 
 from solidlsp.ls_config import LanguageServerId
+from solidlsp.util.subprocess_util import subprocess_run
 from test.conftest import get_repo_path
 
 log = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def _install_astro_test_repo_node_modules() -> None:
             "Installing npm dependencies into the Astro test repo at %s. This is a one-time cost per checkout.",
             REPO_ROOT,
         )
-        proc = subprocess.run(
+        proc = subprocess_run(
             [npm_executable, "install", "--no-audit", "--no-fund", "--loglevel=warn"],
             cwd=str(REPO_ROOT),
             capture_output=True,

@@ -86,10 +86,8 @@ class AstroTypeScriptServer(TypeScriptLanguageServer):
     class DependencyProvider(TypeScriptLanguageServer.DependencyProvider):
         """Dependency provider that returns a pre-resolved executable path.
 
-        The Astro LS install (run by ``AstroLanguageServer._setup_runtime_dependencies``)
-        already locates the ``typescript-language-server`` binary alongside the Astro
-        language server, so the companion does not need to perform another install
-        lookup -- it just returns the path it was constructed with.
+        The companion dependency provider uses the pre-resolved ``typescript-language-server``
+        executable path provided at initialization, skipping redundant installation lookups.
         """
 
         def __init__(
@@ -146,17 +144,16 @@ class AstroTypeScriptServer(TypeScriptLanguageServer):
     def _create_base_initialize_params(self) -> dict:
         params = super()._create_base_initialize_params()
 
-        params["initializationOptions"] = {
-            "plugins": [
-                {
-                    "name": "@astrojs/ts-plugin",
-                    "location": self._astro_plugin_path,
-                    "languages": ["astro"],
-                }
-            ],
-            "tsserver": {
-                "path": self._custom_tsdk_path,
-            },
+        init_options = params.setdefault("initializationOptions", {})
+        init_options["plugins"] = [
+            {
+                "name": "@astrojs/ts-plugin",
+                "location": self._astro_plugin_path,
+                "languages": ["astro"],
+            }
+        ]
+        init_options["tsserver"] = {
+            "path": self._custom_tsdk_path,
         }
 
         if "workspace" in params["capabilities"]:
@@ -224,13 +221,6 @@ class AstroLanguageServer(SolidLanguageServer):
 
             # locate install directory and executables
             install_dir = os.path.join(self._ls_resources_dir, f"astro-lsp-{astro_language_server_version}")
-            legacy_install_dir = os.path.join(self._ls_resources_dir, "astro-lsp")
-            if not os.path.exists(install_dir) and os.path.exists(legacy_install_dir):
-                try:
-                    shutil.move(legacy_install_dir, install_dir)
-                except Exception as e:
-                    log.debug("Could not rename legacy astro-lsp directory: %s", e)
-
             astro_executable_path = os.path.join(install_dir, "node_modules", ".bin", "astro-ls")
             ts_ls_executable_path = os.path.join(install_dir, "node_modules", ".bin", "typescript-language-server")
 
@@ -468,6 +458,7 @@ class AstroLanguageServer(SolidLanguageServer):
             log.warning(f"Timeout ({timeout}s) waiting for TypeScript server to finish indexing Astro files, proceeding anyway")
 
     def _send_ts_references_request(self, relative_file_path: str, line: int, column: int) -> list[ls_types.Location]:
+        # construct LSP textDocument/references request payload
         assert self._ts_server is not None
         uri = PathUtils.path_to_uri(os.path.join(self.repository_root_path, relative_file_path))
         request_params = {
@@ -476,9 +467,11 @@ class AstroLanguageServer(SolidLanguageServer):
             "context": {"includeDeclaration": True},
         }
 
+        # query companion typescript language server
         with self._ts_server.open_file(relative_file_path):
             response = self._ts_server.handler.send.references(request_params)  # type: ignore[arg-type]
 
+        # normalize returned location items and filter ignored paths
         result: list[ls_types.Location] = []
         if response is not None:
             for item in response:
@@ -611,6 +604,7 @@ class AstroLanguageServer(SolidLanguageServer):
 
     def _start_typescript_server(self) -> None:
         try:
+            # resolve the astro typescript plugin path
             astro_ts_plugin_path = os.path.join(self._get_install_dir(), "node_modules", "@astrojs", "ts-plugin")
             if not os.path.exists(astro_ts_plugin_path):
                 log.warning(
@@ -620,11 +614,13 @@ class AstroLanguageServer(SolidLanguageServer):
                     astro_ts_plugin_path,
                 )
 
+            # construct companion typescript server configuration
             ts_config = LanguageServerConfig(
                 ls_id=LanguageServerId.TYPESCRIPT,
                 trace_lsp_communication=False,
             )
 
+            # instantiate companion server with astro plugin wiring
             log.info("Creating companion AstroTypeScriptServer")
             self._ts_server = AstroTypeScriptServer(
                 config=ts_config,
@@ -635,9 +631,11 @@ class AstroLanguageServer(SolidLanguageServer):
                 ts_ls_executable_path=self._get_ts_ls_executable(),
             )
 
+            # start companion typescript process
             log.info("Starting companion TypeScript server")
             self._ts_server.start()
 
+            # await companion server readiness before proceeding
             log.info("Waiting for companion TypeScript server to be ready...")
             if not self._ts_server.server_ready.wait(timeout=self.TS_SERVER_READY_TIMEOUT):
                 log.warning(
@@ -645,6 +643,7 @@ class AstroLanguageServer(SolidLanguageServer):
                 )
                 self._ts_server.server_ready.set()
 
+            # mark companion server operational
             self._ts_server_started = True
             log.info("Companion TypeScript server ready")
         except Exception as e:
@@ -654,9 +653,11 @@ class AstroLanguageServer(SolidLanguageServer):
             raise
 
     def _cleanup_indexed_astro_files(self) -> None:
+        # short-circuit if no files were indexed or companion is absent
         if not self._indexed_astro_file_uris or self._ts_server is None:
             return
 
+        # close open virtual buffers on companion server
         log.debug(f"Cleaning up {len(self._indexed_astro_file_uris)} indexed Astro files")
         for uri in self._indexed_astro_file_uris:
             try:
@@ -671,6 +672,7 @@ class AstroLanguageServer(SolidLanguageServer):
             except Exception as e:
                 log.debug(f"Error closing indexed Astro file {uri}: {e}")
 
+        # reset indexed file tracking
         self._indexed_astro_file_uris.clear()
 
     def _stop_typescript_server(self) -> None:
@@ -686,8 +688,10 @@ class AstroLanguageServer(SolidLanguageServer):
 
     @override
     def _start_server(self) -> None:
+        # launch companion typescript language server
         self._start_typescript_server()
 
+        # define LSP request and notification handlers
         def register_capability_handler(params: dict) -> None:
             assert "registrations" in params
             for registration in params["registrations"]:
@@ -709,20 +713,20 @@ class AstroLanguageServer(SolidLanguageServer):
                 log.info("Astro language server ready signal detected")
                 self.server_ready.set()
 
+        # register event handlers on the astro server
         self.server.on_request("client/registerCapability", register_capability_handler)
         self.server.on_request("workspace/configuration", configuration_handler)
         self.server.on_notification("window/logMessage", window_log_message)
         self.server.on_notification("$/progress", do_nothing)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
 
-        # The companion is already running. If anything below fails, our caller never received an
-        # initialised handle and therefore can't invoke stop() -- so we tear down the companion and
-        # the partially-started Astro process here to avoid leaking Node processes.
+        # start server process and initialize
         try:
             log.info("Starting Astro server process")
             self.server.start()
             initialize_params = self._create_initialize_params()
 
+            # initialize handshake with astro language server
             log.info("Sending initialize request from LSP client to LSP server and awaiting response")
             init_response = self.server.send.initialize(initialize_params)
             log.debug(f"Received initialize response from Astro server: {init_response}")
