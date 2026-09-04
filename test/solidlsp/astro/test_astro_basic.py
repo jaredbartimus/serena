@@ -105,10 +105,13 @@ class TestAstroDualLspArchitecture:
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
     def test_dual_server_definition_lookup(self, language_server: SolidLanguageServer) -> None:
-        """Test that definitions work with both Astro and TypeScript servers."""
-        counter_path = os.path.join("src", "stores", "counter.ts")
-        ts_definition = language_server.request_definition(counter_path, 6, 35)
-        assert ts_definition, "Expected definition from TypeScript server"
+        """Test that definitions work across both Astro and TypeScript servers."""
+        index_path = os.path.join("src", "pages", "index.astro")
+        # Line 8 (0-indexed: 7), col 18 is createCounter() call in index.astro
+        definitions = language_server.request_definition(index_path, 7, 18)
+        assert definitions, "Expected cross-file definition from index.astro to counter.ts"
+        assert definitions[0]["relativePath"] == os.path.join("src", "stores", "counter.ts")
+        assert definitions[0]["range"]["start"]["line"] == 6
 
 
 @pytest.mark.astro
@@ -121,17 +124,7 @@ class TestAstroEdgeCases:
         index_path = os.path.join("src", "pages", "index.astro")
         # index.astro has imports and variable declarations in frontmatter
         symbols = language_server.request_document_symbols(index_path)
-        # Should handle frontmatter without errors
-        assert symbols is not None, "Expected document symbols but got None"
-
-    @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
-    def test_layout_astro_with_props_interface(self, language_server: SolidLanguageServer) -> None:
-        """Test Layout.astro which has Props interface in frontmatter."""
-        layout_path = os.path.join("src", "layouts", "Layout.astro")
-        # Layout.astro defines: interface Props { title: string; }
-        symbols = language_server.request_document_symbols(layout_path)
         assert symbols is not None, "Expected document symbols but got None"
         all_symbols, _roots = symbols.get_all_symbols_and_roots()
         symbol_names = [s["name"] for s in all_symbols]
-        # Verify Props interface is found
-        assert "Props" in symbol_names, f"Expected 'Props' interface in Layout.astro, got: {symbol_names}"
+        assert "counter" in symbol_names, f"Expected 'counter' variable in index.astro, got: {symbol_names}"

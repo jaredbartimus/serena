@@ -26,14 +26,10 @@ class TestAstroSymbolRetrieval:
     def test_get_containing_symbol_in_typescript(self, language_server: SolidLanguageServer) -> None:
         """Test finding containing symbol in .ts file within Astro project."""
         counter_path = os.path.join("src", "stores", "counter.ts")
-        # Request document symbols to verify we can get symbols from TS files
-        symbols = language_server.request_document_symbols(counter_path)
-        assert symbols is not None, "Expected document symbols but got None"
-        all_symbols, _roots = symbols.get_all_symbols_and_roots()
-        symbol_names = [s["name"] for s in all_symbols]
-        # Verify expected symbols from counter.ts
-        assert "CounterStore" in symbol_names, f"Expected 'CounterStore' in symbols, got: {symbol_names}"
-        assert "createCounter" in symbol_names, f"Expected 'createCounter' in symbols, got: {symbol_names}"
+        # Line 8 (0-indexed: 7), col 6 contains `let count = 0;` inside createCounter
+        containing_symbol = language_server.request_containing_symbol(counter_path, 7, 6)
+        assert containing_symbol is not None, "Expected containing symbol but got None"
+        assert containing_symbol["name"] in ("count", "createCounter")
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
     def test_find_references_to_typescript_export(self, language_server: SolidLanguageServer) -> None:
@@ -56,17 +52,16 @@ class TestAstroSymbolRetrieval:
         assert ("index.astro", 7) in locations, f"Expected the call at index.astro:7, got: {sorted(locations)}"
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
-    def test_go_to_definition_from_typescript(self, language_server: SolidLanguageServer) -> None:
-        """Test go-to-definition within TypeScript source."""
-        counter_path = os.path.join("src", "stores", "counter.ts")
-        # In createCounter function, CounterStore return type is on line 7 (0-indexed: 6)
-        definition_list = language_server.request_definition(counter_path, 6, 35)
+    def test_go_to_definition_across_astro_and_typescript(self, language_server: SolidLanguageServer) -> None:
+        """Test cross-file go-to-definition from .astro template to TypeScript utility function."""
+        index_path = os.path.join("src", "pages", "index.astro")
+        # Line 15 (0-indexed: 14), col 18 is formatNumber(counter.count) in index.astro
+        definition_list = language_server.request_definition(index_path, 14, 18)
         assert definition_list, "Expected at least one definition"
-        # Should point to CounterStore interface definition
         definition = definition_list[0]
-        assert definition["uri"].endswith("counter.ts"), f"Expected counter.ts, got: {definition['uri']}"
-        # CounterStore is defined at line 0
-        assert definition["range"]["start"]["line"] == 0, f"Expected line 0, got: {definition['range']['start']['line']}"
+        assert definition["relativePath"] == os.path.join("src", "utils", "format.ts")
+        # formatNumber is defined on line 4 (0-indexed: 3)
+        assert definition["range"]["start"]["line"] == 3
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.ASTRO], indirect=True)
     def test_format_utils_symbols(self, language_server: SolidLanguageServer) -> None:

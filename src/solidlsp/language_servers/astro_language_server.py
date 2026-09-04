@@ -43,6 +43,27 @@ DEFAULT_TYPESCRIPT_VERSION = "5.9.3"
 DEFAULT_TYPESCRIPT_LANGUAGE_SERVER_VERSION = "5.1.3"
 
 
+def _map_astro_extension_to_language_id(relative_file_path: str, default: str) -> str:
+    """Map file extension to LSP language identifier for Astro projects.
+
+    Astro files use 'astro'. TSX/JSX use 'typescriptreact'/'javascriptreact' so that
+    tsserver does not truncate symbol ranges at multi-line JSX expressions. Plain
+    TS/JS use 'typescript'/'javascript'. Other extensions return the specified default.
+    """
+    ext = os.path.splitext(relative_file_path)[1].lower()
+    if ext == ".astro":
+        return "astro"
+    elif ext == ".tsx":
+        return "typescriptreact"
+    elif ext == ".jsx":
+        return "javascriptreact"
+    elif ext in (".ts", ".mts", ".cts"):
+        return "typescript"
+    elif ext in (".js", ".mjs", ".cjs"):
+        return "javascript"
+    return default
+
+
 class AstroTypeScriptServer(TypeScriptLanguageServer):
     """TypeScript LS configured with @astrojs/ts-plugin for Astro file support."""
 
@@ -95,19 +116,7 @@ class AstroTypeScriptServer(TypeScriptLanguageServer):
         ``TypeScriptLanguageServer._get_language_id_for_file``); Astro projects commonly
         include .tsx/.jsx via React/Preact/Solid integrations.
         """
-        ext = os.path.splitext(relative_file_path)[1].lower()
-        if ext == ".astro":
-            return "astro"
-        elif ext == ".tsx":
-            return "typescriptreact"
-        elif ext == ".jsx":
-            return "javascriptreact"
-        elif ext in (".ts", ".mts", ".cts"):
-            return "typescript"
-        elif ext in (".js", ".mjs", ".cjs"):
-            return "javascript"
-        else:
-            return "typescript"
+        return _map_astro_extension_to_language_id(relative_file_path, default="typescript")
 
     def __init__(
         self,
@@ -397,19 +406,7 @@ class AstroLanguageServer(SolidLanguageServer):
     def _get_language_id_for_file(self, relative_file_path: str) -> str:
         # Inherited document-symbol requests open files on this primary server, so JSX/TSX must use
         # the react variants here too (see the companion's _get_language_id_for_file for rationale).
-        ext = os.path.splitext(relative_file_path)[1].lower()
-        if ext == ".astro":
-            return "astro"
-        elif ext == ".tsx":
-            return "typescriptreact"
-        elif ext == ".jsx":
-            return "javascriptreact"
-        elif ext in (".ts", ".mts", ".cts"):
-            return "typescript"
-        elif ext in (".js", ".mjs", ".cjs"):
-            return "javascript"
-        else:
-            return "astro"
+        return _map_astro_extension_to_language_id(relative_file_path, default="astro")
 
     def _is_typescript_file(self, file_path: str) -> bool:
         ext = os.path.splitext(file_path)[1].lower()
