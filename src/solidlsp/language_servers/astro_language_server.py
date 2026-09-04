@@ -26,7 +26,7 @@ from solidlsp.language_servers.typescript_language_server import (
     prefer_non_node_modules_definition,
 )
 from solidlsp.ls import LanguageServerDependencyProvider, SolidLanguageServer
-from solidlsp.ls_config import FilenameMatcher, Language, LanguageServerConfig
+from solidlsp.ls_config import FilenameMatcher, LanguageServerConfig, LanguageServerId
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_utils import PathUtils
 from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo
@@ -34,25 +34,30 @@ from solidlsp.settings import SolidLSPSettings
 
 log = logging.getLogger(__name__)
 
+DEFAULT_ASTRO_LANGUAGE_SERVER_VERSION = "2.16.11"
+DEFAULT_ASTRO_TS_PLUGIN_VERSION = "1.10.10"
+DEFAULT_TYPESCRIPT_VERSION = "5.9.3"
+DEFAULT_TYPESCRIPT_LANGUAGE_SERVER_VERSION = "5.1.3"
+
 
 class AstroTypeScriptServer(TypeScriptLanguageServer):
     """TypeScript LS configured with @astrojs/ts-plugin for Astro file support."""
 
     @classmethod
     @override
-    def get_language_enum_instance(cls) -> Language:
+    def get_language_server_id(cls) -> LanguageServerId:
         """Return TYPESCRIPT since this is a TypeScript language server variant.
 
         AstroTypeScriptServer is a companion server that uses TypeScript's language server
         with the Astro TypeScript plugin. It reports as TYPESCRIPT to maintain compatibility
         with the TypeScript language server infrastructure.
         """
-        return Language.TYPESCRIPT
+        return LanguageServerId.TYPESCRIPT
 
     def get_source_fn_matcher(self) -> FilenameMatcher:
         # Override with an Astro-specific matcher to ensure .astro files are included (they can be
         # discovered via references); otherwise references in .astro files would be filtered out.
-        return Language.ASTRO.get_source_fn_matcher()
+        return LanguageServerId.ASTRO.get_source_fn_matcher()
 
     class DependencyProvider(TypeScriptLanguageServer.DependencyProvider):
         """Dependency provider that returns a pre-resolved executable path.
@@ -420,15 +425,17 @@ class AstroLanguageServer(SolidLanguageServer):
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
         # Get TypeScript version settings from TypeScript language server settings
-        typescript_config = solidlsp_settings.get_ls_specific_settings(Language.TYPESCRIPT)
-        typescript_version = typescript_config.get("typescript_version", "5.9.3")
-        typescript_language_server_version = typescript_config.get("typescript_language_server_version", "5.1.3")
-        astro_config = solidlsp_settings.get_ls_specific_settings(Language.ASTRO)
-        astro_language_server_version = astro_config.get("astro_language_server_version", "2.16.11")
+        typescript_config = solidlsp_settings.get_ls_specific_settings(LanguageServerId.TYPESCRIPT)
+        typescript_version = typescript_config.get("typescript_version", DEFAULT_TYPESCRIPT_VERSION)
+        typescript_language_server_version = typescript_config.get(
+            "typescript_language_server_version", DEFAULT_TYPESCRIPT_LANGUAGE_SERVER_VERSION
+        )
+        astro_config = solidlsp_settings.get_ls_specific_settings(LanguageServerId.ASTRO)
+        astro_language_server_version = astro_config.get("astro_language_server_version", DEFAULT_ASTRO_LANGUAGE_SERVER_VERSION)
         # @astrojs/ts-plugin is NOT a dependency of @astrojs/language-server, so it must be installed
         # explicitly. Without it the companion tsserver has no .astro awareness and cross-file
         # resolution between .ts/.js and .astro files silently returns nothing.
-        astro_ts_plugin_version = astro_config.get("astro_ts_plugin_version", "1.10.10")
+        astro_ts_plugin_version = astro_config.get("astro_ts_plugin_version", DEFAULT_ASTRO_TS_PLUGIN_VERSION)
         npm_registry = astro_config.get("npm_registry", typescript_config.get("npm_registry"))
 
         deps = RuntimeDependencyCollection(
@@ -559,7 +566,7 @@ class AstroLanguageServer(SolidLanguageServer):
                 )
 
             ts_config = LanguageServerConfig(
-                code_language=Language.TYPESCRIPT,
+                ls_id=LanguageServerId.TYPESCRIPT,
                 trace_lsp_communication=False,
             )
 
